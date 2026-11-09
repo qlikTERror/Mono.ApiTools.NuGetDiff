@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using Mono.Cecil;
+using Mono.Cecil.Cil;
 using Xunit.Abstractions;
 
 namespace Mono.ApiTools.Tests;
@@ -80,6 +82,61 @@ public class GetMissingSymbolsTests : BaseUnitTest
 			});
 
 		AssertMatchesExpectedResults(result);
+	}
+
+	[Fact]
+	public void MethodReturningArrayOfDependencyTypeIsCompatible()
+	{
+		byte[] dependencyBytes;
+		using (var dependency = AssemblyDefinition.CreateAssembly(
+			new AssemblyNameDefinition("Dependency", new Version(2, 0)), "Dependency", ModuleKind.Dll))
+		{
+			var module = dependency.MainModule;
+			var point = new TypeDefinition("Example", "Point", TypeAttributes.Public | TypeAttributes.Class, module.TypeSystem.Object);
+			var api = new TypeDefinition("Example", "Api", TypeAttributes.Public | TypeAttributes.Class, module.TypeSystem.Object);
+			module.Types.Add(point);
+			module.Types.Add(api);
+
+			var getPoints = new MethodDefinition("GetPoints", MethodAttributes.Public | MethodAttributes.Static, new ArrayType(point));
+			getPoints.Body.Instructions.Add(Instruction.Create(OpCodes.Ldnull));
+			getPoints.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+			api.Methods.Add(getPoints);
+
+			using var output = new MemoryStream();
+			dependency.Write(output);
+			dependencyBytes = output.ToArray();
+		}
+
+		byte[] consumerBytes;
+		using (var consumer = AssemblyDefinition.CreateAssembly(
+			new AssemblyNameDefinition("Consumer", new Version(1, 0)), "Consumer", ModuleKind.Dll))
+		{
+			var module = consumer.MainModule;
+			var dependencyReference = new AssemblyNameReference("Dependency", new Version(1, 0));
+			module.AssemblyReferences.Add(dependencyReference);
+			var point = new TypeReference("Example", "Point", module, dependencyReference);
+			var api = new TypeReference("Example", "Api", module, dependencyReference);
+			var getPoints = new MethodReference("GetPoints", new ArrayType(point), api) { HasThis = false };
+
+			var consumerType = new TypeDefinition("Example", "Consumer", TypeAttributes.Public | TypeAttributes.Class, module.TypeSystem.Object);
+			module.Types.Add(consumerType);
+			var method = new MethodDefinition("Run", MethodAttributes.Public | MethodAttributes.Static, module.TypeSystem.Void);
+			method.Body.Instructions.Add(Instruction.Create(OpCodes.Call, getPoints));
+			method.Body.Instructions.Add(Instruction.Create(OpCodes.Pop));
+			method.Body.Instructions.Add(Instruction.Create(OpCodes.Ret));
+			consumerType.Methods.Add(method);
+
+			using var output = new MemoryStream();
+			consumer.Write(output);
+			consumerBytes = output.ToArray();
+		}
+
+		var result = ApiCompat.GetMissingSymbols(
+			new StreamInputAssembly(() => new MemoryStream(consumerBytes)),
+			new StreamInputAssembly(() => new MemoryStream(dependencyBytes)));
+
+		Assert.Empty(result.Types);
+		Assert.Empty(result.Members);
 	}
 
 	private static void WriteExpectedResults(MissingSymbols result, [CallerMemberName] string? methodName = null)

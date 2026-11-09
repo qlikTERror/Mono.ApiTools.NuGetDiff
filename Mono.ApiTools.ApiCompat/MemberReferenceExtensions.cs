@@ -30,7 +30,7 @@ internal static class MemberReferenceExtensions
 
 	public static MethodReference Clone(this MethodReference method, ModuleDefinition module)
 	{
-		var newReturn = method.ReturnType.Clone(module);
+		var newReturn = CloneParameterType(method.ReturnType, module, method);
 		var newDeclaring = method.DeclaringType.Clone(module);
 
 		var newMethod = new MethodReference(method.Name, newReturn, newDeclaring)
